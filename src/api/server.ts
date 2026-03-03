@@ -6,6 +6,7 @@ import { fetchSlackMessages, getSlackChannels } from '../ingestion/slack.js';
 import { fetchPullRequests, fetchIssues, fetchCommits } from '../ingestion/github.js';
 import { askGemini } from '../extraction/gemini.js';
 import { MemoryType, SourceType } from '../types/index.js';
+import { runIngestionNow, startScheduler } from '../jobs/scheduler.js';
 
 dotenv.config();
 
@@ -14,12 +15,33 @@ const app = express();
 app.use(express.json({ strict: false }));
 app.use(express.urlencoded({ extended: true }));
 
+// Start scheduler if enabled
+if (process.env.ENABLE_SCHEDULER === 'true') {
+  startScheduler();
+}
+
 app.get('/', (_, res) => {
   res.send('KnewBot is running');
 });
 
 app.get('/health', (_, res) => {
   res.json({ status: 'ok' });
+});
+
+app.post('/api/llm/ask', async (req, res) => {
+  try {
+    const { question, context } = req.body;
+    
+    if (!question) {
+      return res.status(400).json({ error: 'Question required' });
+    }
+    
+    const answer = await askGemini(question, context || '');
+    res.json({ answer });
+  } catch (error) {
+    console.error('LLM ask error:', error);
+    res.status(500).json({ error: 'Failed to get answer' });
+  }
 });
 
 app.post('/slack/events', async (req, res) => {
@@ -57,7 +79,7 @@ app.post('/slack/events', async (req, res) => {
       console.log('Searching for:', text);
       
       // Search memories
-      const results = await searchMemories(text, 5);
+      const results = await searchMemories(text, 10);
       console.log('Found results:', results.length);
       
       if (results.length === 0) {
@@ -111,12 +133,29 @@ app.post('/api/ingest/slack', async (req, res) => {
     const { channelId, limit } = req.body;
     const messages = await fetchSlackMessages(channelId, limit || 100);
     
+    console.log(`Found ${messages.length} messages from Slack channel ${channelId}`);
+    
     let processed = 0;
     for (const msg of messages) {
-      if (msg.text.length > 50) {
+      // Skip bot responses (by content pattern, not user ID)
+      if (msg.text.startsWith(':thinking_face:') || 
+          msg.text.startsWith('*Question:*') ||
+          msg.text.startsWith('*Answer:*')) {
+        console.log(`Skipping bot response`);
+        continue;
+      }
+      
+      // Skip slash commands
+      if (msg.text.startsWith('/')) {
+        console.log(`Skipping command`);
+        continue;
+      }
+      
+      // Only process messages with meaningful content
+      if (msg.text.length > 30) {
         await processAndStoreMemory(
           'slack',
-          msg.ts,
+          `slack-${channelId}-${msg.ts}`,
           msg.text,
           new Date(parseFloat(msg.ts) * 1000),
           `slack://${channelId}/${msg.ts}`
@@ -125,20 +164,76 @@ app.post('/api/ingest/slack', async (req, res) => {
       }
     }
     
-    res.json({ success: true, processed });
+    res.json({ success: true, processed, total: messages.length });
   } catch (error) {
     console.error('Ingest slack error:', error);
     res.status(500).json({ error: 'Failed to ingest Slack messages' });
   }
 });
 
+app.get('/api/slack/channels', async (_, res) => {
+  try {
+    const channels = await getSlackChannels();
+    console.log('Channels found:', channels.length);
+    res.json({ channels });
+  } catch (error) {
+    console.error('Get channels error:', error);
+    res.status(500).json({ error: 'Failed to get channels' });
+  }
+});
+
+app.post('/api/test/slack', async (req, res) => {
+  try {
+    const { channelId } = req.body;
+    const messages = await fetchSlackMessages(channelId, 5);
+    res.json({ 
+      channelId, 
+      messageCount: messages.length,
+      messages: messages.map(m => ({ 
+        text: m.text.substring(0, 100), 
+        user: m.user,
+        ts: m.ts 
+      }))
+    });
+  } catch (error: unknown) {
+    const err = error as { data?: { error?: string }; message?: string };
+    console.error('Test slack error:', error);
+    res.status(500).json({ error: err?.data?.error || err?.message || String(error) });
+  }
+});
+
+app.post('/api/sync', async (req, res) => {
+  try {
+    res.json({ message: 'Starting sync...' });
+    runIngestionNow();
+  } catch (error) {
+    console.error('Sync error:', error);
+    res.status(500).json({ error: 'Sync failed' });
+  }
+});
+
+app.get('/api/sync/status', (req, res) => {
+  res.json({ 
+    schedulerEnabled: process.env.ENABLE_SCHEDULER === 'true',
+    intervalMinutes: parseInt(process.env.INGEST_INTERVAL_MINUTES || '60'),
+    configured: {
+      slack: !!process.env.SLACK_CHANNEL_ID,
+      github: !!(process.env.GITHUB_OWNER && process.env.GITHUB_REPO && process.env.GITHUB_REPO !== 'your-repo')
+    }
+  });
+});
+
 app.post('/api/ingest/github', async (req, res) => {
   try {
-    const { owner, repo } = req.body;
+    const { owner, repo, limit = 30 } = req.body;
     
-    const prs = await fetchPullRequests(owner, repo);
-    const issues = await fetchIssues(owner, repo);
-    const commits = await fetchCommits(owner, repo);
+    console.log(`Ingesting GitHub: ${owner}/${repo}`);
+    
+    const prs = await fetchPullRequests(owner, repo, limit);
+    const issues = await fetchIssues(owner, repo, limit);
+    const commits = await fetchCommits(owner, repo, limit);
+    
+    console.log(`Found: ${prs.length} PRs, ${issues.length} issues, ${commits.length} commits`);
     
     let processed = 0;
     
@@ -146,7 +241,7 @@ app.post('/api/ingest/github', async (req, res) => {
       const content = `PR #${pr.number}: ${pr.title}\n${pr.body || ''}`;
       await processAndStoreMemory(
         'github',
-        `pr-${pr.number}`,
+        `pr-${owner}-${repo}-${pr.number}`,
         content,
         new Date(pr.created_at),
         `https://github.com/${pr.repo}/pull/${pr.number}`
@@ -158,7 +253,7 @@ app.post('/api/ingest/github', async (req, res) => {
       const content = `Issue #${issue.number}: ${issue.title}\n${issue.body || ''}`;
       await processAndStoreMemory(
         'github',
-        `issue-${issue.number}`,
+        `issue-${owner}-${repo}-${issue.number}`,
         content,
         new Date(issue.created_at),
         `https://github.com/${issue.repo}/issues/${issue.number}`
@@ -169,10 +264,10 @@ app.post('/api/ingest/github', async (req, res) => {
     for (const commit of commits) {
       await processAndStoreMemory(
         'github',
-        `commit-${commit.created_at}`,
+        `commit-${owner}-${repo}-${commit.sha}`,
         commit.title || '',
         new Date(commit.created_at),
-        `https://github.com/${commit.repo}/commit/${commit.created_at}`
+        `https://github.com/${commit.repo}/commit/${commit.sha}`
       );
       processed++;
     }

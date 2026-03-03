@@ -81,6 +81,7 @@ export interface GitHubEvent {
   body?: string;
   user: string;
   created_at: string;
+  sha?: string;
 }
 
 export interface QueryResult {

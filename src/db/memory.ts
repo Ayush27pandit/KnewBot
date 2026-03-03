@@ -2,6 +2,17 @@ import { query, queryOne, execute } from '../db/connection.js';
 import { MemoryItem, Entity, ExtractedMemory, SourceType, MemoryType, QueryResult } from '../types/index.js';
 import { generateEmbedding } from '../extraction/gemini.js';
 
+export async function memoryExists(
+  sourceType: SourceType,
+  sourceId: string
+): Promise<boolean> {
+  const existing = await queryOne<{ id: string }>(
+    'SELECT id FROM memory_items WHERE source_type = $1 AND source_id = $2',
+    [sourceType, sourceId]
+  );
+  return !!existing;
+}
+
 export async function createMemory(
   type: MemoryType,
   summary: string,
@@ -14,6 +25,17 @@ export async function createMemory(
   metadata: Record<string, unknown> = {}
 ): Promise<string | null> {
   try {
+    // Check if already exists (deduplication)
+    const existing = await queryOne<{ id: string }>(
+      'SELECT id FROM memory_items WHERE source_type = $1 AND source_id = $2',
+      [sourceType, sourceId]
+    );
+    
+    if (existing) {
+      console.log(`Memory already exists for ${sourceType}:${sourceId}, skipping`);
+      return existing.id;
+    }
+    
     const result = await queryOne<{ id: string }>(
       `INSERT INTO memory_items (type, summary, content, source_type, source_id, source_url, timestamp, confidence, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)

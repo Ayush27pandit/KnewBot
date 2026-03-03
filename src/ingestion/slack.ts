@@ -11,16 +11,35 @@ export async function fetchSlackMessages(
   limit: number = 100
 ): Promise<SlackMessage[]> {
   try {
-    const result = await slack.conversations.history({
+    console.log('Fetching Slack messages from channel:', channelId);
+    
+    const historyResult = await slack.conversations.history({
       channel: channelId,
       limit,
     });
 
-    if (!result.messages) {
+    console.log('Slack API response ok:', historyResult.ok);
+    console.log('Slack messages count:', historyResult.messages?.length || 0);
+
+    if (!historyResult.messages || historyResult.messages.length === 0) {
+      console.log('No messages found, checking if bot is in channel...');
+      
+      const infoResult = await slack.conversations.info({
+        channel: channelId,
+      });
+      
+      console.log('Channel info ok:', infoResult.ok);
+      console.log('Channel name:', infoResult.channel?.name);
+      console.log('Channel member count:', infoResult.channel?.num_members);
+      
+      if (!infoResult.ok) {
+        console.log('Channel info error:', infoResult.error);
+      }
+      
       return [];
     }
 
-    return result.messages
+    return historyResult.messages
       .filter((msg): msg is NonNullable<typeof msg> => msg && !!msg.text)
       .map((msg) => ({
         channel: channelId,
@@ -71,6 +90,8 @@ export async function getSlackChannels(): Promise<Array<{ id: string; name: stri
       limit: 100,
     });
 
+    console.log('Slack channels result:', JSON.stringify(result, null, 2));
+    
     return (result.channels || [])
       .filter((ch): ch is NonNullable<typeof ch> => !!ch.id && !!ch.name)
       .map((ch) => ({
