@@ -4,6 +4,7 @@ import axios from 'axios';
 import { searchMemories, getMemoriesByType, getMemoriesByEntity, processAndStoreMemory } from '../db/memory.js';
 import { fetchSlackMessages, getSlackChannels } from '../ingestion/slack.js';
 import { fetchPullRequests, fetchIssues, fetchCommits } from '../ingestion/github.js';
+import { queryCache } from '../utils/cache.js';
 import { askGemini } from '../extraction/gemini.js';
 import { MemoryType, SourceType } from '../types/index.js';
 import { runIngestionNow, startScheduler } from '../jobs/scheduler.js';
@@ -78,14 +79,28 @@ app.post('/slack/events', async (req, res) => {
       
       console.log('Searching for:', text);
       
+      // Check cache first
+      const cachedAnswer = queryCache.get<string>(text);
+      if (cachedAnswer) {
+        console.log('Cache HIT for query:', text);
+        await axios.post(response_url, {
+          response_type: 'in_channel',
+          text: `${cachedAnswer}\n\n_ℹ️ Answer served from cache_`
+        });
+        return;
+      }
+      console.log('Cache MISS for query:', text);
+      
       // Search memories
       const results = await searchMemories(text, 10);
       console.log('Found results:', results.length);
       
       if (results.length === 0) {
+        const noResultsMsg = `I couldn't find any relevant memories for "${text}". Try a different question.`;
+        queryCache.set(text, noResultsMsg);
         await axios.post(response_url, {
           response_type: 'in_channel',
-          text: `I couldn't find any relevant memories for "${text}". Try a different question.`
+          text: noResultsMsg
         });
         return;
       }
@@ -101,13 +116,16 @@ app.post('/slack/events', async (req, res) => {
       const answer = await askGemini(text, context);
       console.log('Got answer:', answer.substring(0, 100));
       
-      // Format sources
+      // Format sources for response
       const sources = results
         .map(r => r.sources[0]?.url)
         .filter(Boolean)
         .join('\n');
       
       const finalResponse = `*Question:* ${text}\n\n*Answer:* ${answer}\n\n*Sources:*\n${sources || 'No sources'}`;
+      
+      // Cache the final response
+      queryCache.set(text, finalResponse);
       
       // Send final response
       await axios.post(response_url, {
@@ -279,6 +297,26 @@ app.post('/api/ingest/github', async (req, res) => {
   }
 });
 
+app.get('/api/cache/stats', async (req, res) => {
+  try {
+    const stats = queryCache.getStats();
+    res.json(stats);
+  } catch (error) {
+    console.error('Cache stats error:', error);
+    res.status(500).json({ error: 'Failed to get cache stats' });
+  }
+});
+
+app.delete('/api/cache/clear', async (req, res) => {
+  try {
+    queryCache.clear();
+    res.json({ success: true, message: 'Cache cleared' });
+  } catch (error) {
+    console.error('Cache clear error:', error);
+    res.status(500).json({ error: 'Failed to clear cache' });
+  }
+});
+
 app.get('/api/search', async (req, res) => {
   try {
     const { q, limit } = req.query;
@@ -287,7 +325,12 @@ app.get('/api/search', async (req, res) => {
     }
     
     const results = await searchMemories(q as string, Number(limit) || 10);
-    res.json(results);
+    
+    // Log cache stats endpoint
+    const stats = queryCache.getStats();
+    console.log(`Cache stats: ${stats.total} entries, ${stats.hits} hits`);
+    
+    res.json({ results, cacheStats: stats });
   } catch (error) {
     console.error('Search error:', error);
     res.status(500).json({ error: 'Search failed' });

@@ -13,7 +13,7 @@ const app = new App({
 
 app.command('/ask', async ({ command, ack, respond }) => {
   ack();
-  
+
   const question = command.text.trim();
   if (!question) {
     await respond('Please provide a question. Usage: /ask <your question>');
@@ -24,7 +24,7 @@ app.command('/ask', async ({ command, ack, respond }) => {
 
   try {
     const memories = await searchMemories(question, 5);
-    
+
     if (memories.length === 0) {
       await respond("I couldn't find any relevant memories. Try a different question.");
       return;
@@ -52,10 +52,10 @@ app.command('/ask', async ({ command, ack, respond }) => {
 
 app.command('/recent-decisions', async ({ command, ack, respond }) => {
   ack();
-  
+
   try {
     const memories = await searchMemories('decision', 10);
-    
+
     if (memories.length === 0) {
       await respond('No decisions found in the knowledge base.');
       return;

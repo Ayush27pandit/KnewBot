@@ -21,31 +21,31 @@ export async function ingestSlackMessages() {
 
   try {
     console.log(`[Scheduler] Fetching Slack messages from ${SLACK_CHANNEL_ID}...`);
-    
+
     const messages = await fetchSlackMessages(SLACK_CHANNEL_ID, 50);
     const BOT_USER_ID = process.env.SLACK_BOT_USER_ID || '';
-    
+
     let processed = 0;
     for (const msg of messages) {
       // Skip if older than last run
       const msgTimestamp = parseFloat(msg.ts) * 1000;
       if (msgTimestamp <= lastSlackTimestamp) continue;
-      
+
       // Skip bot responses (not by user ID, but by content)
       // Bot responses start with these patterns
-      if (msg.text.startsWith(':thinking_face:') || 
-          msg.text.startsWith('*Question:*') ||
-          msg.text.startsWith('*Answer:*')) {
+      if (msg.text.startsWith(':thinking_face:') ||
+        msg.text.startsWith('*Question:*') ||
+        msg.text.startsWith('*Answer:*')) {
         console.log(`Skipping bot response: ${msg.text.substring(0, 30)}...`);
         continue;
       }
-      
+
       // Skip slash commands
       if (msg.text.startsWith('/')) {
         console.log(`Skipping command: ${msg.text.substring(0, 30)}...`);
         continue;
       }
-      
+
       // Only meaningful messages
       if (msg.text.length > 30) {
         await processAndStoreMemory(
@@ -57,13 +57,13 @@ export async function ingestSlackMessages() {
         );
         processed++;
       }
-      
+
       // Update timestamp
       if (msgTimestamp > lastSlackTimestamp) {
         lastSlackTimestamp = msgTimestamp;
       }
     }
-    
+
     console.log(`[Scheduler] Processed ${processed} new Slack messages`);
   } catch (error) {
     console.error('[Scheduler] Slack ingestion error:', error);
@@ -78,19 +78,19 @@ export async function ingestGitHubData() {
 
   try {
     console.log(`[Scheduler] Fetching GitHub data from ${GITHUB_OWNER}/${GITHUB_REPO}...`);
-    
+
     const [prs, issues, commits] = await Promise.all([
       fetchPullRequests(GITHUB_OWNER, GITHUB_REPO, 20),
       fetchIssues(GITHUB_OWNER, GITHUB_REPO, 20),
       fetchCommits(GITHUB_OWNER, GITHUB_REPO, 20),
     ]);
-    
+
     let processed = 0;
-    
+
     for (const pr of prs) {
       const prDate = new Date(pr.created_at);
       if (prDate <= lastGitHubTimestamp) continue;
-      
+
       await processAndStoreMemory(
         'github',
         `pr-${GITHUB_OWNER}-${GITHUB_REPO}-${pr.number}`,
@@ -100,11 +100,11 @@ export async function ingestGitHubData() {
       );
       processed++;
     }
-    
+
     for (const issue of issues) {
       const issueDate = new Date(issue.created_at);
       if (issueDate <= lastGitHubTimestamp) continue;
-      
+
       await processAndStoreMemory(
         'github',
         `issue-${GITHUB_OWNER}-${GITHUB_REPO}-${issue.number}`,
@@ -114,10 +114,10 @@ export async function ingestGitHubData() {
       );
       processed++;
     }
-    
+
     // Update timestamp
     lastGitHubTimestamp = new Date();
-    
+
     console.log(`[Scheduler] Processed ${processed} new GitHub items`);
   } catch (error) {
     console.error('[Scheduler] GitHub ingestion error:', error);
@@ -126,13 +126,13 @@ export async function ingestGitHubData() {
 
 export function startScheduler() {
   const intervalMs = INGEST_INTERVAL * 60 * 1000;
-  
+
   console.log(`[Scheduler] Starting ingestion scheduler (every ${INGEST_INTERVAL} minutes)`);
-  
+
   // Initial run
   ingestSlackMessages();
   ingestGitHubData();
-  
+
   // Set interval
   setInterval(() => {
     ingestSlackMessages();

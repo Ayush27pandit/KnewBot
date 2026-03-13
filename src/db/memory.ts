@@ -239,6 +239,25 @@ export async function processAndStoreMemory(
   
   const extractions = await extractMemory(content);
   
+  if (extractions.length === 0 && content.trim().length > 0) {
+    const rawSummary = content.length > 200 ? content.substring(0, 200) + '...' : content;
+    const memoryId = await createMemory(
+      'system',
+      rawSummary,
+      sourceType,
+      sourceId,
+      content,
+      timestamp,
+      0.5,
+      sourceUrl,
+      { fallback: 'raw_content' }
+    );
+    if (memoryId) {
+      await createMemoryEmbedding(memoryId, rawSummary);
+    }
+    return;
+  }
+  
   for (const extraction of extractions) {
     const memoryId = await createMemory(
       extraction.type,
