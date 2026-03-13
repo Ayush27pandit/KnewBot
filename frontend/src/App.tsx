@@ -31,11 +31,24 @@ function App() {
     setInput('');
     setLoading(true);
     
-    try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(input)}&limit=5`);
-      const data = await res.json();
+     try {
+      // Auto-detect source filter based on query keywords
+      let sourceFilter = '';
+      const lowerInput = input.toLowerCase();
+      if (lowerInput.includes('nodejs') || lowerInput.includes('multithreading')) {
+        sourceFilter = 'commit-Ayush27pandit-Nodejs-multithreading';
+      }
       
-      const validResults = data.filter((r: { score: number | null }) => r.score && r.score > 0.3);
+      const url = sourceFilter 
+        ? `/api/search?q=${encodeURIComponent(input)}&limit=15&source=${encodeURIComponent(sourceFilter)}`
+        : `/api/search?q=${encodeURIComponent(input)}&limit=15`;
+      
+      const res = await fetch(url);
+      const data = await res.json();
+        
+        // Extract results from response object
+        const resultsArray = data.results || [];
+        const validResults = resultsArray.filter((r: { score: number | null }) => r.score && r.score > 0.3);
       
       if (validResults.length === 0) {
         const botResponse: Message = {
@@ -44,17 +57,27 @@ function App() {
           content: "I don't have any relevant memories about that. I can only answer questions about your team's decisions, incidents, and project history. Try asking about things like 'why did we switch to postgres' or 'what incidents have we had'.",
         };
         setMessages(prev => [...prev, botResponse]);
-      } else {
+       } else {
         const context = validResults
           .map((r: { memory: { summary: string }; sources: { url: string }[] }) => 
             `${r.memory.summary}\nSource: ${r.sources[0]?.url || 'N/A'}`
           )
           .join('\n\n');
         
+        // Include recent conversation history for follow-up questions
+        const recentMessages = messages.slice(-4);
+        const historyContext = recentMessages
+          .map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`)
+          .join('\n');
+        
+        const fullContext = historyContext 
+          ? `Conversation:\n${historyContext}\n\nContext from knowledge base:\n${context}`
+          : context;
+        
         const llmRes = await fetch('/api/llm/ask', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question: input, context }),
+          body: JSON.stringify({ question: input, context: fullContext }),
         });
         
         const llmData = await llmRes.json();

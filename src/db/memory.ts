@@ -113,11 +113,20 @@ export async function createMemoryEmbedding(
 
 export async function searchMemories(
   searchText: string,
-  limit: number = 10
+  limit: number = 10,
+  sourceFilter?: string
 ): Promise<QueryResult[]> {
   try {
     const embedding = await generateEmbedding(searchText);
     const embeddingStr = JSON.stringify(embedding);
+    
+    let whereClause = 'WHERE e.embedding IS NOT NULL';
+    const params: (string | number)[] = [embeddingStr, limit];
+    
+    if (sourceFilter) {
+      whereClause += ' AND m.source_id ILIKE $3';
+      params.push(`%${sourceFilter}%`);
+    }
     
     const results = await query<{
       id: string;
@@ -135,10 +144,10 @@ export async function searchMemories(
               (1 - (e.embedding <=> $1::vector)) as score
        FROM memory_items m
        LEFT JOIN memory_embeddings e ON m.id = e.memory_id
-       WHERE e.embedding IS NOT NULL
+       ${whereClause}
        ORDER BY e.embedding <=> $1::vector
        LIMIT $2`,
-      [embeddingStr, limit]
+      params
     );
 
     return results.map((row) => ({

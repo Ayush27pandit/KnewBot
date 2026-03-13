@@ -319,12 +319,12 @@ app.delete('/api/cache/clear', async (req, res) => {
 
 app.get('/api/search', async (req, res) => {
   try {
-    const { q, limit } = req.query;
+    const { q, limit, source } = req.query;
     if (!q) {
       return res.status(400).json({ error: 'Query required' });
     }
     
-    const results = await searchMemories(q as string, Number(limit) || 10);
+    const results = await searchMemories(q as string, Number(limit) || 10, source as string | undefined);
     
     // Log cache stats endpoint
     const stats = queryCache.getStats();
